@@ -1,0 +1,10 @@
+{
+  "connections": [
+    {
+      "label": "redis_wordpress",
+      "host": "redis",
+      "port": 6379,
+      "dbIndex": 0
+    }
+  ]
+}

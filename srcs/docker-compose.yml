@@ -1,0 +1,224 @@
+# Ce fichier docker-compose permet de gérer et démarrer plusieurs conteneurs
+# nécessaires à l'application. Il facilite le lancement et l'arrêt de l'ensemble.
+
+################################################################################
+########################### SERVICES PRINCIPAUX ################################
+################################################################################
+services:
+  mariadb:
+    container_name: mariadb
+    build:
+      # Dossier où se trouve le Dockerfile
+      context: ./requirements/mariadb
+      dockerfile: Dockerfile
+      args:
+        # Argument utilisé pendant la construction (pas au démarrage)
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+    image: mariadb
+    env_file:
+      - .env
+    expose:
+      - 3306 # Port exposé uniquement entre conteneurs (pas sur l'hôte)
+    volumes:
+      - mariadb_volume:/var/lib/mysql
+    healthcheck:
+      # Vérifie si MariaDB répond avant que les autres services dépendent de lui
+      test: ["CMD", "mysqladmin", "ping", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - inception_network
+    restart: unless-stopped
+
+  wordpress:
+    container_name: wordpress
+    depends_on:
+      # Ce service attend que la base de données soit opérationnelle
+      mariadb:
+        condition: service_healthy
+      redis_commander:
+        condition: service_started
+    build:
+      context: ./requirements/wordpress
+      args:
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+    image: wordpress
+    env_file:
+      - .env
+    expose:
+      - 9000 # Port PHP-FPM interne
+    volumes:
+      - wordpress_volume:/var/www/html
+    healthcheck:
+      test: ["CMD", "sh", "-c", "[ -d /run/php ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - inception_network
+    restart: on-failure
+
+  nginx:
+    container_name: nginx
+    depends_on:
+      wordpress:
+        condition: service_healthy
+    build:
+      context: ./requirements/nginx
+      dockerfile: Dockerfile
+      args:
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+        PATH_NGINX_CERTIFICATE: ${PATH_NGINX_CERTIFICATE}
+        PATH_NGINX_TSL_KEY: ${PATH_NGINX_TSL_KEY}
+    image: nginx
+    ports:
+      - 80:80   # HTTP -> redirection vers HTTPS
+      - 443:443 # HTTPS
+    env_file:
+      - .env
+    volumes:
+      - wordpress_volume:/var/www/html
+      - static_website_volume:/var/www/static_website
+    networks:
+      - inception_network
+    restart: on-failure
+
+
+################################################################################
+############################### SERVICES BONUS #################################
+################################################################################
+  redis:
+    container_name: redis
+    build:
+      context: ./requirements/bonus/1_redis
+      args:
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+    image: redis
+    env_file:
+      - .env
+    ports:
+      - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 1s
+      retries: 10
+    volumes:
+      - wordpress_volume:/var/www/html
+    networks:
+      - inception_network
+    restart: always
+
+  ftp:
+    container_name: ftp
+    build:
+      context: ./requirements/bonus/2_ftp
+      args:
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+    image: ftp
+    env_file:
+      - .env
+    ports:
+      - 20:20  # Données FTP
+      - 21:21  # Commandes FTP
+      - "21100-21110:21100-21110" # Ports passifs
+    volumes:
+      - wordpress_volume:/var/www/html
+    networks:
+      - inception_network
+    restart: on-failure
+
+  static_website:
+    container_name: static_website
+    build:
+      context: ./requirements/bonus/3_static_website
+      args:
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+    image: static_website
+    env_file:
+      - .env
+    volumes:
+      - static_website_volume:/var/www/static_website
+    restart: always
+    networks:
+      - inception_network
+
+  adminer:
+    container_name: adminer
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    build:
+      context: ./requirements/bonus/4_adminer
+      args:
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+    image: adminer
+    env_file:
+      - .env
+    ports:
+      - 8090:8090 # Interface web d'Adminer
+    volumes:
+      - mariadb_volume:/var/lib/mysql
+    networks:
+      - inception_network
+    restart: on-failure
+
+  redis_commander:
+    container_name: redis_commander
+    depends_on:
+      redis:
+        condition: service_healthy
+    build:
+      context: ./requirements/bonus/5_redis_commander
+      args:
+        DEBIAN_VERSION: ${DEBIAN_VERSION}
+    image: redis_commander
+    env_file:
+      - .env
+    ports:
+      - 8081:8081 # Interface web pour Redis
+    environment:
+      - REDIS_HOSTS=test:redis:6379
+    volumes:
+      - wordpress_volume:/var/www/html
+    restart: always
+    networks:
+      - inception_network
+
+################################################################################
+################################ VOLUMES #######################################
+################################################################################
+
+volumes:
+  mariadb_volume:
+    driver: local
+    name: mariadb_volume
+    driver_opts:
+      type: none
+      device: '/home/${USER}/data/mariadb'
+      o: bind
+
+  wordpress_volume:
+    driver: local
+    name: wordpress_volume
+    driver_opts:
+      type: none
+      device: '/home/${USER}/data/wordpress'  
+      o: bind
+  
+  static_website_volume:
+    driver: local
+    name: static_website_volume
+    driver_opts:
+      type: none
+      device: '/home/${USER}/data/static_website_volume'  
+      o: bind
+
+################################################################################
+################################ RESEAU ########################################
+################################################################################
+networks:
+  inception_network:
+    name: inception_network
+    driver: bridge
